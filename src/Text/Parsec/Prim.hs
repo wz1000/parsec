@@ -112,8 +112,8 @@ import Control.Monad.Error.Class
 import Text.Parsec.Pos
 import Text.Parsec.Error
 
-unknownError :: State s u -> ParseError
-unknownError state        = newErrorUnknown (statePos state)
+unknownError :: ParseError
+unknownError = newErrorUnknown
 
 sysUnExpectError :: String -> SourcePos -> Reply s u a
 sysUnExpectError msg pos  = Error (newErrorMessage (SysUnExpect msg) pos)
@@ -299,7 +299,7 @@ instance (MonadCont m) => MonadCont (ParsecT s u m) where
           callCC $ \c ->
           runParsecT (f (\a -> mkPT $ \s' -> c (pack s' a))) s
 
-     where pack s a= Empty $ return (Ok a s (unknownError s))
+     where pack s a= Empty $ return (Ok a s unknownError)
 
 instance (MonadError e m) => MonadError e (ParsecT s u m) where
     throwError = lift . throwError
@@ -310,7 +310,7 @@ instance (MonadError e m) => MonadError e (ParsecT s u m) where
 parserReturn :: a -> ParsecT s u m a
 parserReturn x
     = ParsecT $ \s _ _ eok _ ->
-      eok x s (unknownError s)
+      eok x s unknownError
 
 parserBind :: ParsecT s u m a -> (a -> ParsecT s u m b) -> ParsecT s u m b
 {-# INLINE parserBind #-}
@@ -318,6 +318,7 @@ parserBind m k
   = ParsecT $ \s cok cerr eok eerr ->
     let
         -- consumed-okay case for m
+        mcok x s UnknownParseError =  unParser (k x) s cok cerr cok cerr
         mcok x s err =
             let
                  -- if (k x) consumes, those go straigt up
@@ -335,6 +336,7 @@ parserBind m k
             in  unParser (k x) s pcok pcerr peok peerr
 
         -- empty-ok case for m
+        meok x s UnknownParseError = unParser (k x) s cok cerr eok eerr
         meok x s err =
             let
                 -- in these cases, (k x) can return as empty
@@ -373,8 +375,8 @@ instance MonadPlus (ParsecT s u m) where
 
 parserZero :: ParsecT s u m a
 parserZero
-    = ParsecT $ \s _ _ _ eerr ->
-      eerr $ unknownError s
+    = ParsecT $ \_ _ _ _ eerr ->
+      eerr unknownError
 
 parserPlus :: ParsecT s u m a -> ParsecT s u m a -> ParsecT s u m a
 {-# INLINE parserPlus #-}
@@ -391,7 +393,7 @@ parserPlus m n
 instance MonadTrans (ParsecT s u) where
     lift amb = ParsecT $ \s _ _ eok _ -> do
                a <- amb
-               eok a s $ unknownError s
+               eok a s unknownError
 
 infix  0 <?>
 infixr 1 <|>
@@ -431,12 +433,12 @@ label :: ParsecT s u m a -> String -> ParsecT s u m a
 label p msg
   = labels p [msg]
 
+{-# INLINE labels #-}
 labels :: ParsecT s u m a -> [String] -> ParsecT s u m a
 labels p msgs =
     ParsecT $ \s cok cerr eok eerr ->
-    let eok' x s' error = eok x s' $ if errorIsUnknown error
-                  then error
-                  else setExpectErrors error msgs
+    let eok' x s' e@UnknownParseError = eok' x s' e
+        eok' x s' err = eok x s' $ setExpectErrors err msgs
         eerr' err = eerr $ setExpectErrors err msgs
 
     in unParser p s cok cerr eok' eerr'
@@ -490,7 +492,7 @@ tokens :: (Stream s m t, Eq t)
 {-# INLINE tokens #-}
 tokens _ _ []
     = ParsecT $ \s _ _ eok _ ->
-      eok [] s $ unknownError s
+      eok [] s unknownError
 tokens showTokens nextposs tts@(tok:toks)
     = ParsecT $ \(State input pos u) cok cerr _eok eerr ->
     let
@@ -510,7 +512,7 @@ tokens showTokens nextposs tts@(tok:toks)
 
         ok rs = let pos' = nextposs pos tts
                     s' = State rs pos' u
-                in cok tts s' (newErrorUnknown pos')
+                in cok tts s' newErrorUnknown
     in do
         sr <- uncons input
         case sr of
@@ -563,7 +565,7 @@ try p =
 lookAhead :: (Stream s m t) => ParsecT s u m a -> ParsecT s u m a
 lookAhead p =
     ParsecT $ \s _ cerr eok eerr -> do
-        let eok' a _ _ = eok a s (newErrorUnknown (statePos s))
+        let eok' a _ _ = eok a s newErrorUnknown
         unParser p s eok' cerr eok' eerr
 
 -- | The parser @token showTok posFromTok testTok@ accepts a token @t@
@@ -637,7 +639,7 @@ tokenPrimEx showToken nextpos Nothing test
               Just x -> let newpos = nextpos pos c cs
                             newstate = State cs newpos user
                         in seq newpos $ seq newstate $
-                           cok x newstate (newErrorUnknown newpos)
+                           cok x newstate newErrorUnknown
               Nothing -> eerr $ unexpectError (showToken c) pos
 tokenPrimEx showToken nextpos (Just nextState) test
   = ParsecT $ \(State input pos user) cok _cerr _eok eerr -> do
@@ -650,7 +652,7 @@ tokenPrimEx showToken nextpos (Just nextState) test
                             newUser = nextState pos c cs user
                             newstate = State cs newpos newUser
                         in seq newpos $ seq newstate $
-                           cok x newstate $ newErrorUnknown newpos
+                           cok x newstate newErrorUnknown
               Nothing -> eerr $ unexpectError (showToken c) pos
 
 unexpectError :: String -> SourcePos -> ParseError
@@ -818,7 +820,7 @@ updateParserState :: (State s u -> State s u) -> ParsecT s u m (State s u)
 updateParserState f =
     ParsecT $ \s _ _ eok _ ->
     let s' = f s
-    in eok s' s' $ unknownError s'
+    in eok s' s' unknownError
 
 -- < User state combinators
 

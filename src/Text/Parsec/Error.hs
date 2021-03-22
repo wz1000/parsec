@@ -18,7 +18,7 @@
 module Text.Parsec.Error
     ( Message ( SysUnExpect, UnExpect, Expect, Message )
     , messageString
-    , ParseError, errorPos, errorMessages, errorIsUnknown
+    , ParseError(UnknownParseError), errorPos, errorMessages, errorIsUnknown
     , showErrorMessages
     , newErrorMessage, newErrorUnknown
     , addErrorMessage, setErrorPos, setErrorMessage
@@ -99,6 +99,7 @@ messageString (Message     s) = s
 -- instance of the 'Show' and 'Eq' classes.
 
 data ParseError = ParseError !SourcePos [Message]
+                | UnknownParseError
     deriving ( Typeable )
 
 -- | Extracts the source position from the parse error
@@ -106,22 +107,23 @@ data ParseError = ParseError !SourcePos [Message]
 errorPos :: ParseError -> SourcePos
 errorPos (ParseError pos _msgs)
     = pos
+errorPos UnknownParseError = undefined
 
 -- | Extracts the list of error messages from the parse error
 
 errorMessages :: ParseError -> [Message]
 errorMessages (ParseError _pos msgs)
     = sort msgs
+errorMessages UnknownParseError = []
 
 errorIsUnknown :: ParseError -> Bool
-errorIsUnknown (ParseError _pos msgs)
-    = null msgs
+errorIsUnknown UnknownParseError = True
+errorIsUnknown _ = False
 
 -- < Create parse errors
 
-newErrorUnknown :: SourcePos -> ParseError
-newErrorUnknown pos
-    = ParseError pos []
+newErrorUnknown :: ParseError
+newErrorUnknown = UnknownParseError
 
 newErrorMessage :: Message -> SourcePos -> ParseError
 newErrorMessage msg pos
@@ -130,21 +132,22 @@ newErrorMessage msg pos
 addErrorMessage :: Message -> ParseError -> ParseError
 addErrorMessage msg (ParseError pos msgs)
     = ParseError pos (msg:msgs)
+addErrorMessage msg x = x
 
 setErrorPos :: SourcePos -> ParseError -> ParseError
 setErrorPos pos (ParseError _ msgs)
     = ParseError pos msgs
+setErrorPos _pos x = x
 
 setErrorMessage :: Message -> ParseError -> ParseError
 setErrorMessage msg (ParseError pos msgs)
     = ParseError pos (msg : filter (msg /=) msgs)
+setErrorMessage msg x = x
 
 mergeError :: ParseError -> ParseError -> ParseError
+mergeError a UnknownParseError = a
+mergeError UnknownParseError b = b
 mergeError e1@(ParseError pos1 msgs1) e2@(ParseError pos2 msgs2)
-    -- prefer meaningful errors
-    | null msgs2 && not (null msgs1) = e1
-    | null msgs1 && not (null msgs2) = e2
-    | otherwise
     = case pos1 `compare` pos2 of
         -- select the longest match
         EQ -> ParseError pos1 (msgs1 ++ msgs2)
@@ -152,17 +155,20 @@ mergeError e1@(ParseError pos1 msgs1) e2@(ParseError pos2 msgs2)
         LT -> e2
 
 instance Show ParseError where
-    show err
-        = show (errorPos err) ++ ":" ++
+    show UnknownParseError = "unknown parse error"
+    show (ParseError pos msgs)
+        = show pos ++ ":" ++
           showErrorMessages "or" "unknown parse error"
                             "expecting" "unexpected" "end of input"
-                           (errorMessages err)
+                           msgs
 
 instance Eq ParseError where
-    l == r
-        = errorPos l == errorPos r && messageStrs l == messageStrs r
+    UnknownParseError == UnknownParseError = True
+    (ParseError pos1 msgs1) == (ParseError pos2 msgs2)
+        = pos1 == pos2 && messageStrs msgs1 == messageStrs msgs2
         where
-          messageStrs = map messageString . errorMessages
+          messageStrs = map messageString
+    _ == _ = False
 
 -- Language independent show function
 
